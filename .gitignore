@@ -1,0 +1,13 @@
+bin/
+obj/
+artifacts/
+TestResults/
+.vs/
+*.user
+.env
+.env.*
+!.env.example
+**/auth.json
+*.pfx
+*.p12
+*.key
