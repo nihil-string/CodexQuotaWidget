@@ -46,6 +46,34 @@ public sealed class ComposerIntegrationArchitectureTests
         Assert.True(mainWindowCreation > probeDispatch);
     }
 
+    [Fact]
+    public void ApplicationProjectDeclaresPerMonitorV2DpiAwareness()
+    {
+        var project = LoadApplicationFile("CodexQuotaWidget.csproj");
+        var manifest = LoadApplicationFile("app.manifest");
+
+        Assert.Contains(
+            "<ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>",
+            project);
+        Assert.Contains(">true/pm</dpiAware>", manifest);
+        Assert.Contains(">PerMonitorV2, PerMonitor</dpiAwareness>", manifest);
+    }
+
+    [Fact]
+    public void MainWindowUsesDisplayOptimizedTextOnOneBaseline()
+    {
+        var xaml = LoadApplicationFile("MainWindow.xaml");
+
+        Assert.Contains("TextOptions.TextFormattingMode=\"Display\"", xaml);
+        Assert.Contains("TextOptions.TextHintingMode=\"Fixed\"", xaml);
+        Assert.Contains("AllowsTransparency=\"False\"", xaml);
+        Assert.Contains("TextOptions.TextRenderingMode=\"ClearType\"", xaml);
+        Assert.Contains("<Run x:Name=\"WeeklyLabel\"", xaml);
+        Assert.Contains("<Run x:Name=\"WeeklyPercent\"", xaml);
+        Assert.DoesNotContain("<TextBlock x:Name=\"WeeklyLabel\"", xaml);
+        Assert.DoesNotContain("<TextBlock x:Name=\"WeeklyPercent\"", xaml);
+    }
+
     private static string LoadMainWindowSource()
         => LoadApplicationFile("MainWindow.xaml.cs");
 

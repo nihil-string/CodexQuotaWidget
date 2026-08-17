@@ -11,7 +11,8 @@ public sealed class ComposerProbeControllerTests
         new IntPtr(42),
         new ScreenRectangle(100, 200, 800, 600),
         new ScreenRectangle(420, 750, 148, 28),
-        IsLightBackground: true);
+        IsLightBackground: true,
+        BackgroundRgb: 0xFAFAFA);
 
     [Fact]
     public void ReusesSuccessfulTargetUntilTheNextProbeIsDue()

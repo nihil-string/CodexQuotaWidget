@@ -29,7 +29,8 @@ public sealed class ComposerPlacementTests
             new IntPtr(12345),
             new ScreenRectangle(100, 200, 800, 600),
             new ScreenRectangle(420, 750, 148, 28),
-            IsLightBackground: true);
+            IsLightBackground: true,
+            BackgroundRgb: 0xFAFAFA);
 
         var json = JsonSerializer.Serialize(ComposerProbePayload.FromTarget(target));
         var restored = JsonSerializer.Deserialize<ComposerProbePayload>(json)?.ToTarget();
