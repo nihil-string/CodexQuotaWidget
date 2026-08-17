@@ -6,35 +6,43 @@ internal readonly record struct ComposerProbeObservation(
 
 internal sealed class ComposerProbeController : IDisposable
 {
-    private readonly Func<double, double, Task<CodexComposerTarget?>> _startProbe;
+    private readonly Func<double, double, CancellationToken, Task<CodexComposerTarget?>> _startProbe;
     private readonly TimeSpan _successInterval;
     private readonly TimeSpan _failureInterval;
     private readonly TimeSpan _timeout;
+    private readonly TimeSpan _cachedTargetGrace;
     private Task<CodexComposerTarget?>? _activeProbe;
+    private CancellationTokenSource? _activeProbeCancellation;
     private DateTimeOffset _activeStartedAt;
     private DateTimeOffset _nextProbeAt = DateTimeOffset.MinValue;
     private CodexComposerTarget? _target;
+    private DateTimeOffset _targetObservedAt;
     private bool _activeProbeTimedOut;
     private bool _disposed;
 
     public ComposerProbeController(
-        Func<double, double, Task<CodexComposerTarget?>> startProbe,
+        Func<double, double, CancellationToken, Task<CodexComposerTarget?>> startProbe,
         TimeSpan successInterval,
         TimeSpan failureInterval,
-        TimeSpan timeout)
+        TimeSpan timeout,
+        TimeSpan cachedTargetGrace)
     {
         ArgumentNullException.ThrowIfNull(startProbe);
         if (successInterval <= TimeSpan.Zero ||
             failureInterval <= TimeSpan.Zero ||
-            timeout <= TimeSpan.Zero)
+            timeout <= TimeSpan.Zero ||
+            cachedTargetGrace < TimeSpan.Zero)
         {
-            throw new ArgumentOutOfRangeException(nameof(successInterval), "Probe intervals must be positive.");
+            throw new ArgumentOutOfRangeException(
+                nameof(successInterval),
+                "Probe intervals must be positive and the cached-target grace interval cannot be negative.");
         }
 
         _startProbe = startProbe;
         _successInterval = successInterval;
         _failureInterval = failureInterval;
         _timeout = timeout;
+        _cachedTargetGrace = cachedTargetGrace;
     }
 
     public ComposerProbeObservation Poll(double width, double height, DateTimeOffset now)
@@ -53,8 +61,9 @@ internal sealed class ComposerProbeController : IDisposable
             else if (now - _activeStartedAt >= _timeout)
             {
                 _activeProbeTimedOut = true;
-                _target = null;
-                return new ComposerProbeObservation(Target: null, TimedOut: true);
+                CancelActiveProbe();
+                DiscardExpiredTarget(now);
+                return new ComposerProbeObservation(_target, TimedOut: true);
             }
         }
 
@@ -80,6 +89,7 @@ internal sealed class ComposerProbeController : IDisposable
         }
 
         _target = null;
+        _targetObservedAt = default;
         _nextProbeAt = now;
     }
 
@@ -91,24 +101,31 @@ internal sealed class ComposerProbeController : IDisposable
         }
 
         _target = null;
+        _targetObservedAt = default;
         _nextProbeAt = now;
         if (_activeProbe is not null)
         {
             _activeProbeTimedOut = true;
+            CancelActiveProbe();
         }
     }
 
     public void Dispose()
     {
         _disposed = true;
+        CancelActiveProbe();
+        _activeProbeCancellation?.Dispose();
+        _activeProbeCancellation = null;
         _target = null;
+        _targetObservedAt = default;
     }
 
     private void StartProbe(double width, double height, DateTimeOffset now)
     {
         try
         {
-            _activeProbe = _startProbe(width, height) ??
+            _activeProbeCancellation = new CancellationTokenSource();
+            _activeProbe = _startProbe(width, height, _activeProbeCancellation.Token) ??
                 Task.FromResult<CodexComposerTarget?>(null);
             _activeStartedAt = now;
             _activeProbeTimedOut = false;
@@ -118,7 +135,9 @@ internal sealed class ComposerProbeController : IDisposable
             // The probe factory is an external automation boundary. A synchronous
             // startup failure is treated exactly like a failed probe.
             _activeProbe = null;
-            _target = null;
+            _activeProbeCancellation?.Dispose();
+            _activeProbeCancellation = null;
+            DiscardExpiredTarget(now);
             _nextProbeAt = now + _failureInterval;
         }
     }
@@ -127,6 +146,8 @@ internal sealed class ComposerProbeController : IDisposable
     {
         var completedProbe = _activeProbe!;
         _activeProbe = null;
+        var completedCancellation = _activeProbeCancellation;
+        _activeProbeCancellation = null;
         CodexComposerTarget? completedResult = null;
         try
         {
@@ -137,18 +158,46 @@ internal sealed class ComposerProbeController : IDisposable
             // UI Automation and process inspection are external boundaries.
             // Faulted probes fail closed and are retried after backoff.
         }
+        finally
+        {
+            completedCancellation?.Dispose();
+        }
 
         var result = _activeProbeTimedOut ? null : completedResult;
         _activeProbeTimedOut = false;
         if (result is { } target)
         {
             _target = target;
+            _targetObservedAt = now;
             _nextProbeAt = now + _successInterval;
         }
         else
         {
-            _target = null;
+            DiscardExpiredTarget(now);
             _nextProbeAt = now + _failureInterval;
+        }
+    }
+
+    private void CancelActiveProbe()
+    {
+        try
+        {
+            _activeProbeCancellation?.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+            // Completion won the race and already disposed the cancellation source.
+        }
+    }
+
+    private void DiscardExpiredTarget(DateTimeOffset now)
+    {
+        if (_target is null ||
+            now < _targetObservedAt ||
+            now - _targetObservedAt > _cachedTargetGrace)
+        {
+            _target = null;
+            _targetObservedAt = default;
         }
     }
 }

@@ -1,10 +1,96 @@
+using System.Text.Json;
 using CodexQuotaWidget.Models;
+using CodexQuotaWidget.Services;
 using Xunit;
 
 namespace CodexQuotaWidget.Tests;
 
 public sealed class ComposerPlacementTests
 {
+    [Theory]
+    [InlineData(42, 42u, true)]
+    [InlineData(42, 43u, false)]
+    [InlineData(0, 42u, false)]
+    [InlineData(42, 0u, false)]
+    public void MatchesAnyForegroundWindowOwnedByTheCodexProcess(
+        int processId,
+        uint foregroundProcessId,
+        bool expected)
+    {
+        Assert.Equal(
+            expected,
+            CodexComposerLocator.IsForegroundProcess(processId, foregroundProcessId));
+    }
+
+    [Fact]
+    public void IsolatedProbePayloadRoundTripsTheValidatedTarget()
+    {
+        var target = new CodexComposerTarget(
+            new IntPtr(12345),
+            new ScreenRectangle(100, 200, 800, 600),
+            new ScreenRectangle(420, 750, 148, 28),
+            IsLightBackground: true);
+
+        var json = JsonSerializer.Serialize(ComposerProbePayload.FromTarget(target));
+        var restored = JsonSerializer.Deserialize<ComposerProbePayload>(json)?.ToTarget();
+
+        Assert.Equal(target, restored);
+    }
+
+    [Fact]
+    public void DoesNotRepairZOrderWhenOverlayIsAlreadyAboveCodex()
+    {
+        var windowsAbove = new Dictionary<IntPtr, IntPtr>
+        {
+            [new IntPtr(10)] = new IntPtr(20),
+            [new IntPtr(20)] = new IntPtr(30),
+            [new IntPtr(30)] = IntPtr.Zero
+        };
+
+        var needsRepair = CodexComposerLocator.TryGetOverlayZOrderRepair(
+            new IntPtr(10),
+            new IntPtr(30),
+            handle => windowsAbove[handle],
+            out var insertAfter);
+
+        Assert.False(needsRepair);
+        Assert.Equal(new IntPtr(20), insertAfter);
+    }
+
+    [Fact]
+    public void RepairsZOrderImmediatelyAboveCodexWhenOverlayIsBehind()
+    {
+        var windowsAbove = new Dictionary<IntPtr, IntPtr>
+        {
+            [new IntPtr(10)] = new IntPtr(20),
+            [new IntPtr(20)] = IntPtr.Zero
+        };
+
+        var needsRepair = CodexComposerLocator.TryGetOverlayZOrderRepair(
+            new IntPtr(10),
+            new IntPtr(30),
+            handle => windowsAbove[handle],
+            out var insertAfter);
+
+        Assert.True(needsRepair);
+        Assert.Equal(new IntPtr(20), insertAfter);
+    }
+
+    [Fact]
+    public void RejectsZOrderRepairWithoutBothWindowHandles()
+    {
+        Assert.False(CodexComposerLocator.TryGetOverlayZOrderRepair(
+            IntPtr.Zero,
+            new IntPtr(30),
+            _ => IntPtr.Zero,
+            out _));
+        Assert.False(CodexComposerLocator.TryGetOverlayZOrderRepair(
+            new IntPtr(10),
+            IntPtr.Zero,
+            _ => IntPtr.Zero,
+            out _));
+    }
+
     [Fact]
     public void CentersQuotaBetweenPermissionsAndModelButtons()
     {

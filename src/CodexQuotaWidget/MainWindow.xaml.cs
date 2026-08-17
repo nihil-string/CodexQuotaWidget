@@ -1,7 +1,11 @@
+using System.ComponentModel;
+using System.Diagnostics;
 using System.Drawing;
+using System.Globalization;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Security;
+using System.Text.Json;
 using System.Windows;
 using System.Windows.Interop;
 using System.Windows.Media;
@@ -21,10 +25,12 @@ public partial class MainWindow : Window
     private const long WsExAppWindow = 0x40000;
     private const long WsExNoActivate = 0x08000000;
     private const uint SwpNoActivate = 0x0010;
+    private const uint SwpNoZOrder = 0x0004;
     private const uint SwpShowWindow = 0x0040;
     private static readonly TimeSpan ComposerProbeInterval = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan ComposerProbeFailureInterval = TimeSpan.FromSeconds(1);
     private static readonly TimeSpan ComposerProbeTimeout = TimeSpan.FromSeconds(1);
+    private static readonly TimeSpan ComposerCachedTargetGrace = TimeSpan.FromSeconds(15);
     private static readonly System.Drawing.Color TrayMenuForeground = System.Drawing.Color.FromArgb(242, 241, 236);
 
     private readonly SessionRateLimitReader _reader = new();
@@ -32,7 +38,6 @@ public partial class MainWindow : Window
     private readonly QuotaRefreshCoordinator _refreshCoordinator;
     private readonly WidgetSettingsStore _settingsStore = new();
     private readonly CodexProcessMonitor _codexProcessMonitor = new();
-    private readonly CodexComposerLocator _composerLocator = new();
     private readonly ComposerProbeController _composerProbeController;
     private readonly StartupRegistration _startupRegistration = new();
     private readonly DispatcherTimer _refreshTimer;
@@ -82,7 +87,8 @@ public partial class MainWindow : Window
             StartComposerProbeAsync,
             ComposerProbeInterval,
             ComposerProbeFailureInterval,
-            ComposerProbeTimeout);
+            ComposerProbeTimeout,
+            ComposerCachedTargetGrace);
         _enableSystemIntegration = enableSystemIntegration;
         _previewSnapshot = previewSnapshot;
         var settingsLoad = previewSnapshot is null
@@ -646,11 +652,10 @@ public partial class MainWindow : Window
 
         var now = DateTimeOffset.UtcNow;
         var observation = _composerProbeController.Poll(Width, Height, now);
-        if (observation.TimedOut ||
-            observation.Target is not { } target ||
+        if (observation.Target is not { } target ||
             !CodexComposerLocator.TryProjectToCurrentWindow(target, out var placement))
         {
-            if (observation.Target is not null && !observation.TimedOut)
+            if (observation.Target is not null)
             {
                 _composerProbeController.Invalidate(now);
             }
@@ -683,18 +688,23 @@ public partial class MainWindow : Window
             Y: (int)Math.Round(placement.Top),
             Width: Math.Max(1, (int)Math.Round(placement.Width)),
             Height: Math.Max(1, (int)Math.Round(placement.Height)));
-        if (!wasVisible ||
-            _lastNativePlacement != nativePlacement ||
-            _lastPlacedCodexHandle != target.WindowHandle)
+        var placementChanged = _lastNativePlacement != nativePlacement ||
+            _lastPlacedCodexHandle != target.WindowHandle;
+        var needsZOrderRepair = CodexComposerLocator.TryGetOverlayZOrderRepair(
+            target.WindowHandle,
+            handle,
+            out var zOrderInsertAfter);
+        if (!wasVisible || placementChanged || needsZOrderRepair)
         {
+            var updateZOrder = needsZOrderRepair;
             if (!SetWindowPos(
                     handle,
-                    IntPtr.Zero,
+                    updateZOrder ? zOrderInsertAfter : IntPtr.Zero,
                     nativePlacement.X,
                     nativePlacement.Y,
                     nativePlacement.Width,
                     nativePlacement.Height,
-                    SwpNoActivate | SwpShowWindow))
+                    SwpNoActivate | SwpShowWindow | (updateZOrder ? 0 : SwpNoZOrder)))
             {
                 _lastNativePlacement = null;
                 _lastPlacedCodexHandle = IntPtr.Zero;
@@ -708,11 +718,75 @@ public partial class MainWindow : Window
         Opacity = Math.Clamp(_settings.Opacity, 0.6, 1.0);
     }
 
-    private Task<CodexComposerTarget?> StartComposerProbeAsync(double width, double height) =>
-        Task.Run<CodexComposerTarget?>(() =>
-            _composerLocator.TryLocate(width, height, out var target)
-                ? target
-                : null);
+    private static async Task<CodexComposerTarget?> StartComposerProbeAsync(
+        double width,
+        double height,
+        CancellationToken cancellationToken)
+    {
+        var executablePath = Environment.ProcessPath;
+        if (string.IsNullOrWhiteSpace(executablePath))
+        {
+            throw new InvalidOperationException("The executable path is unavailable.");
+        }
+
+        var startInfo = new ProcessStartInfo(executablePath)
+        {
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            UseShellExecute = false
+        };
+        startInfo.ArgumentList.Add("--composer-probe");
+        startInfo.ArgumentList.Add(width.ToString("R", CultureInfo.InvariantCulture));
+        startInfo.ArgumentList.Add(height.ToString("R", CultureInfo.InvariantCulture));
+
+        using var process = new Process { StartInfo = startInfo };
+        if (!process.Start())
+        {
+            throw new InvalidOperationException("The isolated composer probe did not start.");
+        }
+
+        using var cancellationRegistration = cancellationToken.Register(
+            static state => TryTerminateProbeProcess((Process)state!),
+            process);
+        var outputTask = process.StandardOutput.ReadToEndAsync();
+        try
+        {
+            await process.WaitForExitAsync(cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            TryTerminateProbeProcess(process);
+            await process.WaitForExitAsync();
+            _ = await outputTask;
+            throw;
+        }
+
+        var output = await outputTask;
+        if (process.ExitCode != 0 || string.IsNullOrWhiteSpace(output))
+        {
+            return null;
+        }
+
+        return JsonSerializer.Deserialize<ComposerProbePayload>(output)?.ToTarget();
+    }
+
+    private static void TryTerminateProbeProcess(Process process)
+    {
+        try
+        {
+            if (!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+            }
+        }
+        catch (Exception exception) when (
+            exception is InvalidOperationException or
+            Win32Exception or
+            NotSupportedException)
+        {
+            // A concurrently exiting probe needs no further cleanup.
+        }
+    }
 
     private void ApplyComposerTheme(bool isLightBackground)
     {

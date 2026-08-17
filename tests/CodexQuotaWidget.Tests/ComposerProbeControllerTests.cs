@@ -17,7 +17,7 @@ public sealed class ComposerProbeControllerTests
     public void ReusesSuccessfulTargetUntilTheNextProbeIsDue()
     {
         var starts = 0;
-        using var controller = CreateController((_, _) =>
+        using var controller = CreateController((_, _, _) =>
         {
             starts++;
             return Task.FromResult<CodexComposerTarget?>(Target);
@@ -39,7 +39,7 @@ public sealed class ComposerProbeControllerTests
         var firstProbe = new TaskCompletionSource<CodexComposerTarget?>(
             TaskCreationOptions.RunContinuationsAsynchronously);
         var starts = 0;
-        using var controller = CreateController((_, _) =>
+        using var controller = CreateController((_, _, _) =>
         {
             starts++;
             return starts == 1
@@ -68,7 +68,7 @@ public sealed class ComposerProbeControllerTests
     public void ConvertsFaultedProbeToFailureBackoff()
     {
         var starts = 0;
-        using var controller = CreateController((_, _) =>
+        using var controller = CreateController((_, _, _) =>
         {
             starts++;
             return Task.FromException<CodexComposerTarget?>(new InvalidOperationException("provider failed"));
@@ -83,11 +83,90 @@ public sealed class ComposerProbeControllerTests
         Assert.Equal(2, starts);
     }
 
+    [Fact]
+    public void KeepsLastSuccessfulTargetDuringBoundedTransientFailures()
+    {
+        var starts = 0;
+        using var controller = CreateController((_, _, _) =>
+        {
+            starts++;
+            return Task.FromResult<CodexComposerTarget?>(starts == 1 ? Target : null);
+        });
+
+        var initial = controller.Poll(148, 28, StartTime);
+        var firstFailure = controller.Poll(148, 28, StartTime.AddSeconds(5));
+        var secondFailure = controller.Poll(148, 28, StartTime.AddSeconds(6));
+        var expired = controller.Poll(148, 28, StartTime.AddSeconds(15.1));
+
+        Assert.Equal(Target, initial.Target);
+        Assert.Equal(Target, firstFailure.Target);
+        Assert.Equal(Target, secondFailure.Target);
+        Assert.Null(expired.Target);
+        Assert.Equal(4, starts);
+    }
+
+    [Fact]
+    public void KeepsCachedTargetAfterTimeoutWithoutOverlappingTheProbe()
+    {
+        var pendingProbe = new TaskCompletionSource<CodexComposerTarget?>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var starts = 0;
+        using var controller = CreateController((_, _, _) =>
+        {
+            starts++;
+            return starts == 1
+                ? Task.FromResult<CodexComposerTarget?>(Target)
+                : pendingProbe.Task;
+        });
+
+        _ = controller.Poll(148, 28, StartTime);
+        _ = controller.Poll(148, 28, StartTime.AddSeconds(5));
+        var timedOut = controller.Poll(148, 28, StartTime.AddSeconds(6));
+        var expired = controller.Poll(148, 28, StartTime.AddSeconds(15.1));
+
+        Assert.True(timedOut.TimedOut);
+        Assert.Equal(Target, timedOut.Target);
+        Assert.Null(expired.Target);
+        Assert.Equal(2, starts);
+    }
+
+    [Fact]
+    public void CancelsTimedOutProbeBeforeAllowingARetry()
+    {
+        var starts = 0;
+        var observedToken = CancellationToken.None;
+        using var controller = CreateController((_, _, cancellationToken) =>
+        {
+            starts++;
+            observedToken = cancellationToken;
+            var completion = new TaskCompletionSource<CodexComposerTarget?>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            cancellationToken.Register(
+                static state =>
+                    ((TaskCompletionSource<CodexComposerTarget?>)state!).TrySetCanceled(),
+                completion);
+            return completion.Task;
+        });
+
+        _ = controller.Poll(148, 28, StartTime);
+        var timedOut = controller.Poll(148, 28, StartTime.AddSeconds(1));
+
+        Assert.True(timedOut.TimedOut);
+        Assert.True(observedToken.IsCancellationRequested);
+        Assert.Equal(1, starts);
+
+        _ = controller.Poll(148, 28, StartTime.AddSeconds(1.1));
+        _ = controller.Poll(148, 28, StartTime.AddSeconds(2.1));
+
+        Assert.Equal(2, starts);
+    }
+
     private static ComposerProbeController CreateController(
-        Func<double, double, Task<CodexComposerTarget?>> startProbe) =>
+        Func<double, double, CancellationToken, Task<CodexComposerTarget?>> startProbe) =>
         new(
             startProbe,
             successInterval: TimeSpan.FromSeconds(5),
             failureInterval: TimeSpan.FromSeconds(1),
-            timeout: TimeSpan.FromSeconds(1));
+            timeout: TimeSpan.FromSeconds(1),
+            cachedTargetGrace: TimeSpan.FromSeconds(15));
 }

@@ -12,12 +12,35 @@ internal readonly record struct CodexComposerTarget(
     ScreenRectangle Placement,
     bool IsLightBackground);
 
+internal sealed record ComposerProbePayload(
+    long WindowHandle,
+    ScreenRectangle WindowBounds,
+    ScreenRectangle Placement,
+    bool IsLightBackground)
+{
+    public static ComposerProbePayload FromTarget(CodexComposerTarget target) =>
+        new(
+            target.WindowHandle.ToInt64(),
+            target.WindowBounds,
+            target.Placement,
+            target.IsLightBackground);
+
+    public CodexComposerTarget ToTarget() =>
+        new(
+            new IntPtr(WindowHandle),
+            WindowBounds,
+            Placement,
+            IsLightBackground);
+}
+
 internal sealed class CodexComposerLocator
 {
     private const double BottomSearchDepth = 180;
     private const double MinimumModelButtonWidth = 44;
     private const string ComposerButtonClass = "h-token-button-composer";
     private const string CompactComposerButtonClass = "h-token-button-composer-sm";
+    private const uint GwHwndPrevious = 3;
+    private const int MaxZOrderTraversal = 1024;
     public bool TryLocate(
         double desiredWidthDips,
         double desiredHeightDips,
@@ -161,6 +184,7 @@ internal sealed class CodexComposerLocator
     private static IntPtr FindCodexMainWindow()
     {
         var foregroundWindow = GetForegroundWindow();
+        _ = GetWindowThreadProcessId(foregroundWindow, out var foregroundProcessId);
         var processes = Process.GetProcessesByName("ChatGPT");
         try
         {
@@ -178,7 +202,7 @@ internal sealed class CodexComposerLocator
                         continue;
                     }
 
-                    if (handle == foregroundWindow)
+                    if (IsForegroundProcess(process.Id, foregroundProcessId))
                     {
                         return handle;
                     }
@@ -205,6 +229,52 @@ internal sealed class CodexComposerLocator
                 process.Dispose();
             }
         }
+    }
+
+    internal static bool IsForegroundProcess(int processId, uint foregroundProcessId) =>
+        processId > 0 &&
+        foregroundProcessId != 0 &&
+        (uint)processId == foregroundProcessId;
+
+    public static bool TryGetOverlayZOrderRepair(
+        IntPtr targetWindowHandle,
+        IntPtr overlayHandle,
+        out IntPtr insertAfter) =>
+        TryGetOverlayZOrderRepair(
+            targetWindowHandle,
+            overlayHandle,
+            windowHandle => GetWindow(windowHandle, GwHwndPrevious),
+            out insertAfter);
+
+    internal static bool TryGetOverlayZOrderRepair(
+        IntPtr targetWindowHandle,
+        IntPtr overlayHandle,
+        Func<IntPtr, IntPtr> getWindowAbove,
+        out IntPtr insertAfter)
+    {
+        ArgumentNullException.ThrowIfNull(getWindowAbove);
+        insertAfter = IntPtr.Zero;
+        if (targetWindowHandle == IntPtr.Zero || overlayHandle == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        var windowAboveTarget = getWindowAbove(targetWindowHandle);
+        insertAfter = windowAboveTarget;
+        var current = windowAboveTarget;
+        for (var hops = 0;
+             current != IntPtr.Zero && hops < MaxZOrderTraversal;
+             hops++)
+        {
+            if (current == overlayHandle)
+            {
+                return false;
+            }
+
+            current = getWindowAbove(current);
+        }
+
+        return true;
     }
 
     private static List<ButtonCandidate> ReadButtonCandidates(
@@ -311,6 +381,9 @@ internal sealed class CodexComposerLocator
 
     [DllImport("user32.dll")]
     private static extern uint GetWindowThreadProcessId(IntPtr windowHandle, out uint processId);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetWindow(IntPtr windowHandle, uint command);
 
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
