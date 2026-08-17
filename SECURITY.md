@@ -2,6 +2,14 @@
 
 Review date: 2026-08-17
 
+## Reporting a vulnerability
+
+Use GitHub's private vulnerability reporting flow under the repository's
+**Security** tab. Do not open a public issue containing access tokens, account
+identifiers, local logs, screenshots with personal data, or reproduction files
+that may contain credentials. Include the affected version, expected impact,
+and the smallest redacted reproduction that demonstrates the problem.
+
 ## Threat model
 
 The widget runs in the same Windows user session as Codex and therefore can read that user's Codex access token. The design goal is to minimize where that token can travel and to avoid persistence, privilege escalation, or executable update paths.
