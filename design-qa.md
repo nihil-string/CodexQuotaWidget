@@ -102,4 +102,11 @@ No actionable P0, P1, or P2 differences remain in the attached layout.
 - Fix: reused the code-native circular progress renderer at 10px with a 1.5px green remaining-quota arc over a low-contrast track.
 - Result: the ring now visibly represents 49%, while permission text, quota text, context indicator, and model text retain one visual baseline. Cached accessibility anchors reduced a five-second CPU sample from 0.922s to 0.141s without changing the 300ms follow cadence.
 
+### Pass 13
+
+- Evidence: two Windows `MoAppHangXProc` reports on 2026-08-17 named `CodexQuotaWidget.exe` as the external process after the attached-footer build was enabled.
+- P0: synchronous 300ms accessibility reads on the WPF dispatcher combined with a cross-process owned-window relationship created a possible circular wait between Codex and the widget.
+- Fix: removed cross-process ownership, moved UI Automation to a background single-flight probe limited to once per five seconds, batch-cached automation properties, hid after a one-second timeout, projected window-only movement with native bounds, and skipped unchanged `SetWindowPos` calls.
+- Result: the quota strip remains visually independent from the Codex DOM and process. A stalled accessibility provider can hide one overlay and occupy at most one background probe; it can no longer block the widget dispatcher while Codex waits on an owned window.
+
 final result: passed

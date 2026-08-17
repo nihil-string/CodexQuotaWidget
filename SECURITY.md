@@ -19,7 +19,7 @@ The widget runs in the same Windows user session as Codex and therefore can read
 - Never modifies `auth.json`, Codex configuration, hooks, browser data, the Codex installation, or Windows security settings.
 - When `Follow Codex` is enabled, writes exactly one current-user Run value containing this executable path and the fixed `--background` argument. Disabling the setting removes that value.
 - Checks local process metadata every two seconds for the exact packaged path suffix `WindowsApps\OpenAI.Codex_*\app\ChatGPT.exe`; it does not open process memory, enable CDP, inject code, send window messages, or modify the Codex process.
-- Uses Windows UI Automation every 300 ms only to read visible composer-button names, CSS class tokens exposed by Chromium accessibility, and screen bounds. It binds its own tool window as an owned window and repositions that window with `SetWindowPos`; it never invokes an automation pattern or sends input to Codex.
+- Uses Windows UI Automation only while the Codex main window is active, with at most one background probe every five seconds. Each probe batch-caches visible composer-button names, CSS class tokens exposed by Chromium accessibility, and screen bounds. A one-second timeout invalidates the overlay without starting overlapping calls. The tool window has no cross-process owner or parent; 300 ms native-coordinate projection handles window movement between probes, and `SetWindowPos` runs only when the projected bounds actually change. It never invokes an automation pattern or sends input to Codex.
 - Samples one screen pixel immediately above the footer to choose light or dark text. The pixel is used only for an in-memory luminance calculation and is not stored or transmitted.
 - Requires a valid event timestamp before accepting a local rate-limit record and discards quota windows whose reset time has already passed.
 - Has no updater, plugin loader, embedded browser, scripting engine, or third-party runtime package in the application project.
@@ -37,6 +37,7 @@ One HTTPS `GET` request every 60 seconds while the widget is actively shown or r
 - Release archives are not Authenticode-signed. Verify the published SHA-256 before use.
 - The Codex process check is a path heuristic used only to show or hide the widget, not a security identity boundary.
 - The bottom-bar anchors are internal accessibility metadata rather than a public Codex API. A Codex UI update can make the locator stop matching; the widget fails closed by hiding instead of guessing another screen position.
+- A UI Automation provider can still delay an individual background probe. The widget contains that risk with single-flight execution, a one-second display timeout, failure backoff, foreground-only probing, and no cross-process window ownership; a provider call that never returns leaves the overlay hidden instead of accumulating threads or blocking the WPF dispatcher.
 - A compromised source tree or build machine can still produce a malicious binary; reproducible review of the source and release hash remains necessary.
 
 ## Verification performed

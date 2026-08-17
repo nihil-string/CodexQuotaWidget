@@ -13,7 +13,7 @@
 - 在线查询失败时，才只读 `%CODEX_HOME%\sessions` 或 `%USERPROFILE%\.codex\sessions` 下的 `*.jsonl` 作为本地降级显示；缺少有效事件时间的记录会被拒绝，已经重置的旧周期不会继续显示。
 - 不读取浏览器 Cookie，不接受 API Key，不加载远程页面。
 - 不修改 Codex 配置，不安装 hook，不开启 CDP，不注入或改写 Codex 进程和 Windows Store 安装目录，不申请管理员权限。
-- 只通过 Windows UI Automation 读取底栏按钮的名称、样式类和屏幕边界，再把本程序自己的无边框窗口绑定为 Codex 的 owned window；不会点击、输入或发送窗口消息。
+- 只在 Codex 主窗口位于前台时，通过后台、单飞的 Windows UI Automation 探测读取底栏按钮名称、样式类和屏幕边界；额度条是独立无边框窗口，不与 Codex 建立跨进程 owner/parent 关系，不会点击、输入或发送窗口消息。
 - 只在 `%LOCALAPPDATA%\CodexQuotaWidget\settings.json` 保存透明度、穿透、跟随 Codex 和向后兼容的旧版显示设置。
 - 设置文件损坏或无法读取时，本次运行使用安全默认值，但不会同步启动项或在退出时自动覆盖原文件；用户明确修改菜单设置后才会写入新的有效配置。
 - “跟随 Codex”只在当前用户的 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 写入本程序路径和 `--background` 参数；关闭该选项会删除这一项。
@@ -57,10 +57,10 @@ dotnet run --project .\tests\CodexQuotaWidget.LiveProbe\CodexQuotaWidget.LivePro
 
 右键额度条会打开深色圆角菜单，可控制刷新、跟随 Codex、鼠标穿透、透明度、隐藏和退出。开启鼠标穿透后请从托盘菜单关闭穿透；托盘菜单保留完整的恢复入口。
 
-“跟随 Codex”默认开启：程序以当前用户启动项进入轻量托盘后台，每 2 秒检查一次官方 `OpenAI.Codex_*` 包的 `ChatGPT.exe` 主进程，并以 300ms 的轻量只读定位周期跟随窗口移动、缩放、最小化和输入栏重排。Codex 打开时显示并恢复额度刷新，Codex 关闭时隐藏、停止网络刷新并暂停 session 文件监控。找不到两个底栏锚点或可用空间不足时会直接隐藏，不会退回桌面悬浮窗。短时间内重复的 session 文件事件会合并为一次刷新。
+“跟随 Codex”默认开启：程序以当前用户启动项进入轻量托盘后台，每 2 秒检查一次官方 `OpenAI.Codex_*` 包的 `ChatGPT.exe` 主进程。UI Automation 最多每 5 秒在后台执行一次，使用单次批量属性缓存读取底栏锚点；同一时间只允许一个探测，1 秒未返回即让额度条失效隐藏，且在旧探测结束前不会叠加新调用。两次探测之间以 300ms 的纯 Win32 坐标投影跟随窗口平移，窗口尺寸变化时先隐藏再重新探测，坐标未变化时不调用 `SetWindowPos`。额度条只在 Codex 或自身菜单位于前台时显示。Codex 关闭时停止额度刷新和 session 文件监控。找不到两个锚点或可用空间不足时不会退回桌面悬浮窗；短时间内重复的 session 文件事件会合并为一次刷新。
 
 ## 设计取舍
 
 Windows Store 版 Codex 的 `app-server` 不能由普通外部进程稳定启动，因此实时刷新采用和主流开源额度工具一致的只读 usage 请求。与现有工具不同，本项目固定请求域名、禁用重定向、不刷新 token、不回写认证文件，并保留本地 session 日志作为断网降级。
 
-Codex 当前公开的插件、Skill、MCP、Apps SDK 和 Hook 扩展的是工具、工作流、会话内 UI 或 agent 生命周期；没有公开的桌面壳层控件注入接口。Cockpit Tools 的客户端额度显示采用 loopback CDP 和 renderer 脚本注入，但这要求用调试参数启动 Codex，并扩大本机同用户进程可访问的调试面。本项目只借鉴“跟随 composer 几何位置”的产品思路，独立实现为外部 owned window：不开放调试端口，不复制其源码表达，也不影响 Codex 的 React/DOM 树。
+Codex 当前公开的插件、Skill、MCP、Apps SDK 和 Hook 扩展的是工具、工作流、会话内 UI 或 agent 生命周期；没有公开的桌面壳层控件注入接口。Cockpit Tools 的客户端额度显示采用 loopback CDP 和 renderer 脚本注入，但这要求用调试参数启动 Codex，并扩大本机同用户进程可访问的调试面。本项目只借鉴“跟随 composer 几何位置”的产品思路，独立实现为不建立跨进程 owner 的外部 tool window：不开放调试端口，不复制其源码表达，也不影响 Codex 的 React/DOM 树。后台 UIA 探测与窗口显示线程隔离，并通过单飞、超时失效和失败退避限制可访问性提供程序异常的影响范围。

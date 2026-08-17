@@ -25,6 +25,7 @@ internal static class ComposerPlacement
     private const double HorizontalInset = 8;
     private const double MinimumWidth = 64;
     private const double MaximumAnchorCenterDifference = 12;
+    private const double MaximumWindowSizeDifference = 1;
     private const double VerticalOffset = 2;
 
     public static bool TryCreate(
@@ -61,5 +62,33 @@ internal static class ComposerPlacement
             width,
             desiredHeight);
         return true;
+    }
+
+    public static bool TryProject(
+        ScreenRectangle capturedWindow,
+        ScreenRectangle capturedPlacement,
+        ScreenRectangle currentWindow,
+        out ScreenRectangle placement)
+    {
+        placement = default;
+        if (!capturedWindow.IsFinitePositive ||
+            !capturedPlacement.IsFinitePositive ||
+            !currentWindow.IsFinitePositive ||
+            Math.Abs(currentWindow.Width - capturedWindow.Width) > MaximumWindowSizeDifference ||
+            Math.Abs(currentWindow.Height - capturedWindow.Height) > MaximumWindowSizeDifference ||
+            capturedPlacement.Left < capturedWindow.Left ||
+            capturedPlacement.Top < capturedWindow.Top ||
+            capturedPlacement.Right > capturedWindow.Right ||
+            capturedPlacement.Bottom > capturedWindow.Bottom)
+        {
+            return false;
+        }
+
+        placement = capturedPlacement with
+        {
+            Left = capturedPlacement.Left + currentWindow.Left - capturedWindow.Left,
+            Top = capturedPlacement.Top + currentWindow.Top - capturedWindow.Top
+        };
+        return placement.IsFinitePositive;
     }
 }

@@ -57,4 +57,29 @@ public sealed class ComposerPlacementTests
 
         Assert.False(success);
     }
+
+    [Fact]
+    public void ProjectsCachedPlacementWhenTheCodexWindowOnlyMoves()
+    {
+        var success = ComposerPlacement.TryProject(
+            new ScreenRectangle(100, 200, 800, 600),
+            new ScreenRectangle(420, 750, 148, 28),
+            new ScreenRectangle(140, 260, 800, 600),
+            out var placement);
+
+        Assert.True(success);
+        Assert.Equal(new ScreenRectangle(460, 810, 148, 28), placement);
+    }
+
+    [Fact]
+    public void RejectsCachedPlacementAfterTheCodexWindowResizes()
+    {
+        var success = ComposerPlacement.TryProject(
+            new ScreenRectangle(100, 200, 800, 600),
+            new ScreenRectangle(420, 750, 148, 28),
+            new ScreenRectangle(100, 200, 900, 600),
+            out _);
+
+        Assert.False(success);
+    }
 }

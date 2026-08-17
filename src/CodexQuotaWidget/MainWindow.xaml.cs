@@ -15,15 +15,16 @@ namespace CodexQuotaWidget;
 
 public partial class MainWindow : Window
 {
-    private const int GwlHwndParent = -8;
     private const int GwlExStyle = -20;
     private const long WsExTransparent = 0x20;
     private const long WsExToolWindow = 0x80;
     private const long WsExAppWindow = 0x40000;
     private const long WsExNoActivate = 0x08000000;
     private const uint SwpNoActivate = 0x0010;
-    private const uint SwpNoZOrder = 0x0004;
     private const uint SwpShowWindow = 0x0040;
+    private static readonly TimeSpan ComposerProbeInterval = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan ComposerProbeFailureInterval = TimeSpan.FromSeconds(1);
+    private static readonly TimeSpan ComposerProbeTimeout = TimeSpan.FromSeconds(1);
     private static readonly System.Drawing.Color TrayMenuForeground = System.Drawing.Color.FromArgb(242, 241, 236);
 
     private readonly SessionRateLimitReader _reader = new();
@@ -32,6 +33,7 @@ public partial class MainWindow : Window
     private readonly WidgetSettingsStore _settingsStore = new();
     private readonly CodexProcessMonitor _codexProcessMonitor = new();
     private readonly CodexComposerLocator _composerLocator = new();
+    private readonly ComposerProbeController _composerProbeController;
     private readonly StartupRegistration _startupRegistration = new();
     private readonly DispatcherTimer _refreshTimer;
     private readonly DispatcherTimer _countdownTimer;
@@ -55,7 +57,8 @@ public partial class MainWindow : Window
     private bool _lastCodexRunning;
     private bool _userHidden;
     private bool? _lastLightBackground;
-    private IntPtr _attachedOwnerHandle;
+    private (int X, int Y, int Width, int Height)? _lastNativePlacement;
+    private IntPtr _lastPlacedCodexHandle;
     private bool _isExiting;
 
     public MainWindow(bool backgroundStart = false, bool enableSystemIntegration = true)
@@ -75,6 +78,11 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
         _refreshCoordinator = new QuotaRefreshCoordinator(_usageClient.FetchAsync, _reader.ReadLatestAsync);
+        _composerProbeController = new ComposerProbeController(
+            StartComposerProbeAsync,
+            ComposerProbeInterval,
+            ComposerProbeFailureInterval,
+            ComposerProbeTimeout);
         _enableSystemIntegration = enableSystemIntegration;
         _previewSnapshot = previewSnapshot;
         var settingsLoad = previewSnapshot is null
@@ -98,7 +106,10 @@ public partial class MainWindow : Window
         _countdownTimer.Tick += (_, _) => UpdateResetTimes();
         _lifecycleTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
         _lifecycleTimer.Tick += (_, _) => MonitorCodexState();
-        _placementTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(300) };
+        _placementTimer = new DispatcherTimer(DispatcherPriority.Background)
+        {
+            Interval = TimeSpan.FromMilliseconds(300)
+        };
         _placementTimer.Tick += (_, _) => UpdateComposerPlacement();
         _sessionChangeTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(350) };
         _sessionChangeTimer.Tick += async (_, _) =>
@@ -341,7 +352,9 @@ public partial class MainWindow : Window
     private void DeactivateForCodex()
     {
         StopQuotaUpdates();
-        DetachFromCodex();
+        _composerProbeController.Reset(DateTimeOffset.UtcNow);
+        _lastNativePlacement = null;
+        _lastPlacedCodexHandle = IntPtr.Zero;
         Hide();
     }
 
@@ -631,9 +644,16 @@ public partial class MainWindow : Window
             return;
         }
 
-        if (!_composerLocator.TryLocate(Width, Height, out var target))
+        var now = DateTimeOffset.UtcNow;
+        var observation = _composerProbeController.Poll(Width, Height, now);
+        if (observation.TimedOut ||
+            observation.Target is not { } target ||
+            !CodexComposerLocator.TryProjectToCurrentWindow(target, out var placement))
         {
-            DetachFromCodex();
+            if (observation.Target is not null && !observation.TimedOut)
+            {
+                _composerProbeController.Invalidate(now);
+            }
             Hide();
             return;
         }
@@ -644,30 +664,55 @@ public partial class MainWindow : Window
             return;
         }
 
-        if (_attachedOwnerHandle != target.OwnerHandle)
+        var wasVisible = IsVisible;
+        if (!CodexComposerLocator.IsTargetActive(target, handle, allowOverlayProcess: wasVisible))
         {
-            _ = SetWindowLongPtr(handle, GwlHwndParent, target.OwnerHandle);
-            _attachedOwnerHandle = target.OwnerHandle;
+            Hide();
+            return;
         }
 
         ApplyComposerTheme(target.IsLightBackground);
-        if (!IsVisible)
+        if (!wasVisible)
         {
             Opacity = 0;
             ShowWithoutActivation();
         }
 
-        var placement = target.Placement;
-        _ = SetWindowPos(
-            handle,
-            IntPtr.Zero,
-            (int)Math.Round(placement.Left),
-            (int)Math.Round(placement.Top),
-            Math.Max(1, (int)Math.Round(placement.Width)),
-            Math.Max(1, (int)Math.Round(placement.Height)),
-            SwpNoActivate | SwpNoZOrder | SwpShowWindow);
+        var nativePlacement = (
+            X: (int)Math.Round(placement.Left),
+            Y: (int)Math.Round(placement.Top),
+            Width: Math.Max(1, (int)Math.Round(placement.Width)),
+            Height: Math.Max(1, (int)Math.Round(placement.Height)));
+        if (!wasVisible ||
+            _lastNativePlacement != nativePlacement ||
+            _lastPlacedCodexHandle != target.WindowHandle)
+        {
+            if (!SetWindowPos(
+                    handle,
+                    IntPtr.Zero,
+                    nativePlacement.X,
+                    nativePlacement.Y,
+                    nativePlacement.Width,
+                    nativePlacement.Height,
+                    SwpNoActivate | SwpShowWindow))
+            {
+                _lastNativePlacement = null;
+                _lastPlacedCodexHandle = IntPtr.Zero;
+                Hide();
+                return;
+            }
+
+            _lastNativePlacement = nativePlacement;
+            _lastPlacedCodexHandle = target.WindowHandle;
+        }
         Opacity = Math.Clamp(_settings.Opacity, 0.6, 1.0);
     }
+
+    private Task<CodexComposerTarget?> StartComposerProbeAsync(double width, double height) =>
+        Task.Run<CodexComposerTarget?>(() =>
+            _composerLocator.TryLocate(width, height, out var target)
+                ? target
+                : null);
 
     private void ApplyComposerTheme(bool isLightBackground)
     {
@@ -693,21 +738,6 @@ public partial class MainWindow : Window
         WeeklyRing.TrackBrush = new SolidColorBrush(isLightBackground
             ? System.Windows.Media.Color.FromArgb(48, 0, 0, 0)
             : System.Windows.Media.Color.FromArgb(70, 255, 255, 255));
-    }
-
-    private void DetachFromCodex()
-    {
-        if (_attachedOwnerHandle == IntPtr.Zero)
-        {
-            return;
-        }
-
-        var handle = new WindowInteropHelper(this).Handle;
-        if (handle != IntPtr.Zero)
-        {
-            _ = SetWindowLongPtr(handle, GwlHwndParent, IntPtr.Zero);
-        }
-        _attachedOwnerHandle = IntPtr.Zero;
     }
 
     private void ToggleVisibility()
@@ -798,7 +828,7 @@ public partial class MainWindow : Window
         StopQuotaUpdates();
         _lifecycleTimer.Stop();
         _placementTimer.Stop();
-        DetachFromCodex();
+        _composerProbeController.Dispose();
         _watcher?.Dispose();
         _refreshCoordinator.Dispose();
         _usageClient.Dispose();

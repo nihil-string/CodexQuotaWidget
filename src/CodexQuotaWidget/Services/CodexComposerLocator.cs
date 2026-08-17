@@ -7,7 +7,8 @@ using CodexQuotaWidget.Models;
 namespace CodexQuotaWidget.Services;
 
 internal readonly record struct CodexComposerTarget(
-    IntPtr OwnerHandle,
+    IntPtr WindowHandle,
+    ScreenRectangle WindowBounds,
     ScreenRectangle Placement,
     bool IsLightBackground);
 
@@ -17,54 +18,45 @@ internal sealed class CodexComposerLocator
     private const double MinimumModelButtonWidth = 44;
     private const string ComposerButtonClass = "h-token-button-composer";
     private const string CompactComposerButtonClass = "h-token-button-composer-sm";
-    private IntPtr _cachedOwnerHandle;
-    private AutomationElement? _cachedPermissionsElement;
-    private AutomationElement? _cachedModelElement;
-
     public bool TryLocate(
         double desiredWidthDips,
         double desiredHeightDips,
         out CodexComposerTarget target)
     {
         target = default;
-        var ownerHandle = FindCodexMainWindow();
-        if (ownerHandle == IntPtr.Zero ||
-            !GetWindowRect(ownerHandle, out var nativeWindowRect))
+        var windowHandle = FindCodexMainWindow();
+        if (windowHandle == IntPtr.Zero ||
+            !GetWindowRect(windowHandle, out var nativeWindowRect))
         {
             return false;
         }
 
         var windowRect = ToScreenRectangle(nativeWindowRect);
-        var scale = Math.Max(1, GetDpiForWindow(ownerHandle)) / 96d;
+        var scale = Math.Max(1, GetDpiForWindow(windowHandle)) / 96d;
         var desiredWidth = desiredWidthDips * scale;
         var desiredHeight = desiredHeightDips * scale;
 
         try
         {
-            if (ownerHandle == _cachedOwnerHandle &&
-                TryReadButtonCandidate(_cachedPermissionsElement, windowRect, out var cachedPermissions) &&
-                TryReadButtonCandidate(_cachedModelElement, windowRect, out var cachedModel) &&
-                IsPermissionsButton(cachedPermissions) &&
-                IsModelButton(cachedModel, cachedPermissions) &&
-                ComposerPlacement.TryCreate(
-                    cachedPermissions.Bounds,
-                    cachedModel.Bounds,
-                    desiredWidth,
-                    desiredHeight,
-                    out var cachedPlacement))
+            var root = AutomationElement.FromHandle(windowHandle);
+            var cacheRequest = new CacheRequest
             {
-                target = new CodexComposerTarget(
-                    ownerHandle,
-                    cachedPlacement,
-                    IsLightBackground(cachedPermissions.Bounds, cachedModel.Bounds));
-                return true;
+                TreeScope = TreeScope.Element,
+                AutomationElementMode = AutomationElementMode.Full
+            };
+            cacheRequest.Add(AutomationElement.BoundingRectangleProperty);
+            cacheRequest.Add(AutomationElement.IsOffscreenProperty);
+            cacheRequest.Add(AutomationElement.NameProperty);
+            cacheRequest.Add(AutomationElement.ClassNameProperty);
+
+            AutomationElementCollection buttons;
+            using (cacheRequest.Activate())
+            {
+                buttons = root.FindAll(
+                    TreeScope.Descendants,
+                    new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Button));
             }
 
-            ClearCachedAnchors();
-            var root = AutomationElement.FromHandle(ownerHandle);
-            var buttons = root.FindAll(
-                TreeScope.Descendants,
-                new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Button));
             var candidates = ReadButtonCandidates(buttons, windowRect);
             var permissions = candidates
                 .Where(IsPermissionsButton)
@@ -96,11 +88,9 @@ internal sealed class CodexComposerLocator
                 return false;
             }
 
-            _cachedOwnerHandle = ownerHandle;
-            _cachedPermissionsElement = permissions.Element;
-            _cachedModelElement = model.Element;
             target = new CodexComposerTarget(
-                ownerHandle,
+                windowHandle,
+                windowRect,
                 placement,
                 IsLightBackground(permissions.Bounds, model.Bounds));
             return true;
@@ -116,13 +106,64 @@ internal sealed class CodexComposerLocator
         }
     }
 
+    public static bool TryProjectToCurrentWindow(
+        CodexComposerTarget target,
+        out ScreenRectangle placement)
+    {
+        placement = default;
+        if (target.WindowHandle == IntPtr.Zero ||
+            !IsWindowVisible(target.WindowHandle) ||
+            IsIconic(target.WindowHandle) ||
+            !GetWindowRect(target.WindowHandle, out var nativeWindowRect))
+        {
+            return false;
+        }
+
+        return ComposerPlacement.TryProject(
+            target.WindowBounds,
+            target.Placement,
+            ToScreenRectangle(nativeWindowRect),
+            out placement);
+    }
+
+    public static bool IsTargetActive(
+        CodexComposerTarget target,
+        IntPtr overlayHandle,
+        bool allowOverlayProcess)
+    {
+        var foregroundWindow = GetForegroundWindow();
+        if (foregroundWindow == IntPtr.Zero || target.WindowHandle == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        _ = GetWindowThreadProcessId(target.WindowHandle, out var targetProcessId);
+        _ = GetWindowThreadProcessId(foregroundWindow, out var foregroundProcessId);
+        if (targetProcessId == 0 || foregroundProcessId == 0)
+        {
+            return false;
+        }
+
+        if (foregroundProcessId == targetProcessId)
+        {
+            return true;
+        }
+
+        if (!allowOverlayProcess || overlayHandle == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        _ = GetWindowThreadProcessId(overlayHandle, out var overlayProcessId);
+        return overlayProcessId != 0 && foregroundProcessId == overlayProcessId;
+    }
+
     private static IntPtr FindCodexMainWindow()
     {
         var foregroundWindow = GetForegroundWindow();
         var processes = Process.GetProcessesByName("ChatGPT");
         try
         {
-            var candidates = new List<(IntPtr Handle, long Area)>();
             foreach (var process in processes)
             {
                 try
@@ -142,9 +183,6 @@ internal sealed class CodexComposerLocator
                         return handle;
                     }
 
-                    var width = Math.Max(0, bounds.Right - bounds.Left);
-                    var height = Math.Max(0, bounds.Bottom - bounds.Top);
-                    candidates.Add((handle, (long)width * height));
                 }
                 catch (Exception exception) when (
                     exception is Win32Exception or
@@ -155,10 +193,10 @@ internal sealed class CodexComposerLocator
                 }
             }
 
-            return candidates
-                .OrderByDescending(candidate => candidate.Area)
-                .Select(candidate => candidate.Handle)
-                .FirstOrDefault();
+            // Accessibility work is only justified while the Codex main window is
+            // active. Background windows are hidden by the caller and must not be
+            // polled merely to keep an invisible overlay warm.
+            return IntPtr.Zero;
         }
         finally
         {
@@ -180,7 +218,7 @@ internal sealed class CodexComposerLocator
             var button = buttons[index];
             try
             {
-                var current = button.Current;
+                var current = button.Cached;
                 var bounds = new ScreenRectangle(
                     current.BoundingRectangle.Left,
                     current.BoundingRectangle.Top,
@@ -207,62 +245,10 @@ internal sealed class CodexComposerLocator
         return candidates;
     }
 
-    private static bool TryReadButtonCandidate(
-        AutomationElement? element,
-        ScreenRectangle windowRect,
-        out ButtonCandidate candidate)
-    {
-        candidate = null!;
-        if (element is null)
-        {
-            return false;
-        }
-
-        try
-        {
-            var current = element.Current;
-            var bounds = new ScreenRectangle(
-                current.BoundingRectangle.Left,
-                current.BoundingRectangle.Top,
-                current.BoundingRectangle.Width,
-                current.BoundingRectangle.Height);
-            if (current.IsOffscreen ||
-                !bounds.IsFinitePositive ||
-                bounds.Left < windowRect.Left ||
-                bounds.Right > windowRect.Right ||
-                bounds.Top < windowRect.Bottom - Math.Min(BottomSearchDepth, windowRect.Height * 0.3))
-            {
-                return false;
-            }
-
-            candidate = new ButtonCandidate(element, current.Name, current.ClassName, bounds);
-            return true;
-        }
-        catch (Exception exception) when (
-            exception is ElementNotAvailableException or COMException or InvalidOperationException)
-        {
-            return false;
-        }
-    }
-
     private static bool IsPermissionsButton(ButtonCandidate candidate) =>
         HasCssClass(candidate.ClassName, CompactComposerButtonClass) ||
         candidate.Name.Equals("更改权限", StringComparison.OrdinalIgnoreCase) ||
         candidate.Name.Equals("Change permissions", StringComparison.OrdinalIgnoreCase);
-
-    private static bool IsModelButton(ButtonCandidate candidate, ButtonCandidate permissions) =>
-        candidate.Bounds.Left > permissions.Bounds.Right &&
-        candidate.Bounds.Width >= MinimumModelButtonWidth &&
-        Math.Abs(candidate.Bounds.CenterY - permissions.Bounds.CenterY) <= 8 &&
-        HasCssClass(candidate.ClassName, ComposerButtonClass) &&
-        !HasCssClass(candidate.ClassName, CompactComposerButtonClass);
-
-    private void ClearCachedAnchors()
-    {
-        _cachedOwnerHandle = IntPtr.Zero;
-        _cachedPermissionsElement = null;
-        _cachedModelElement = null;
-    }
 
     private static bool HasCssClass(string className, string expectedClass) =>
         className.Split(' ', StringSplitOptions.RemoveEmptyEntries)
@@ -322,6 +308,9 @@ internal sealed class CodexComposerLocator
 
     [DllImport("user32.dll")]
     private static extern IntPtr GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(IntPtr windowHandle, out uint processId);
 
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
