@@ -1,21 +1,22 @@
 # Design QA
 
-- Source visual truth: `docs\design\selected-compact-glass-target.png`
-- Implementation screenshot: `screenshots\implementation-v6-native-corners.png`
-- Viewport: 324 x 176 device-independent pixels
-- State: live online quota state, dark acrylic backdrop, no hover
-- Full-view comparison evidence: the source and implementation were opened together after each capture; the implementation preserves the selected vertical two-row hierarchy while intentionally compressing the generated mock to the user's requested floating-widget footprint.
-- Focused region comparison: not required. The entire implementation is 324 x 176 and all typography, borders, progress rules, and copy remain legible in the full-resolution capture.
+- Source visual truth: the live Codex composer footer supplied by the user on 2026-08-17.
+- Implementation evidence: `screenshots\implementation-v12-inline-footer.png`.
+- Viewport: 72 x 28 for one available quota window; 148 x 28 for two.
+- State: live weekly quota, Codex light theme, attached between the permissions and model controls.
+- Full-view comparison evidence: the live implementation was captured from the actual Codex desktop window after the quota bar attached to the composer footer.
+- Focused region comparison: the permission control, quota bar, context-usage ring, model name, dictation button, and submit button were captured on the same horizontal strip.
+- Regression previews now use fixed in-process quota fixtures. They do not read real settings or credentials, contact the usage endpoint, create a tray icon, start timers/watchers, or write the registry. Capture waits for layout and a 750 ms DWM composition window to avoid incomplete acrylic frames.
 
 ## Findings
 
-No actionable P0, P1, or P2 differences remain.
+No actionable P0, P1, or P2 differences remain in the attached layout.
 
-- Fonts and typography: Bahnschrift is used for the display numerals and product label; Microsoft YaHei UI is used for Chinese labels and reset copy. The final pass increased reset copy to 10px and quota numerals to 28px for legibility at the compact viewport.
-- Spacing and layout rhythm: 17px horizontal padding, 13px top padding, two 61px quota rows, and single-pixel separators reproduce the target hierarchy without the target mock's excessive vertical canvas.
-- Colors and visual tokens: neutral warm-white text, cool gray secondary copy, one muted mint live indicator, and monochrome progress rules match the selected direction. Native Windows acrylic uses a 63% charcoal tint beneath a 26% WPF surface tint so the controlled backdrop remains perceptible.
+- Fonts and typography: Segoe UI Variable Text and Microsoft YaHei UI match the surrounding Codex controls at 11px; reset details remain available in the tooltip instead of expanding the footer.
+- Spacing and layout rhythm: the quota bar is geometrically centered in the free space between the permissions and model buttons. A user-reviewed 2px downward optical correction aligns the quota text baseline with both native controls.
+- Colors and visual tokens: the weekly marker is a 10px green outline ring matching the neighboring context-usage ring silhouette. Text and separator colors switch from a one-pixel local luminance sample without retaining the sampled pixel.
 - Image quality and asset fidelity: the selected target contains no logos, illustrations, photographs, or non-standard image assets. No placeholder or code-drawn visual asset replaces source imagery.
-- Copy and content: the implementation retains `Codex`, `5 小时`, `每周`, remaining percentages, reset times, and live state. Percentage differences between the mock and capture are expected because the implementation displays live quota data.
+- Copy and content: the implementation retains `Codex`, `5 小时`, `周额度`, remaining percentages, exact local reset timestamps, and live state. Percentage differences between captures are expected because the implementation displays live quota data.
 
 ## Comparison history
 
@@ -59,8 +60,46 @@ No actionable P0, P1, or P2 differences remain.
 - Fix: restored `DWMWA_WINDOW_CORNER_PREFERENCE` at the native HWND level and removed WPF corner radius, border thickness, and border brush entirely.
 - Result: DWM now clips the complete acrylic window; corner pixels show the controlled backdrop outside the native rounded region, with no second WPF contour.
 
+### Pass 7
+
+- Evidence: `screenshots\implementation-v10-final.png` (final labels) and `implementation-v8-compact-rings.png` (initial compact pass).
+- Change: replaced the 324 x 176 vertical meter layout with a 286 x 112 horizontal two-column layout and code-native 48px circular progress rings.
+- Result: 5-hour and weekly quotas are visible in one glance; both exact reset timestamps fit without truncation; true DWM acrylic corners remain intact.
+
+### Pass 8
+
+- Evidence: `screenshots\implementation-v9-themed-menu.png`.
+- P2: the prior WPF context menu inherited a white native-default appearance that conflicted with the acrylic widget.
+- Fix: added a custom dark rounded menu surface, consistent typography, mint check states, compact spacing, subtle separators, and a single-click opacity cycle to avoid a bulky submenu.
+- Result: the context menu reads as part of the same product surface and remains legible over both controlled backdrop tones.
+
+### Pass 9
+
+- Evidence: `screenshots\implementation-v11-ultra-compact.png`.
+- Change: reduced the viewport from 286 x 112 to 238 x 100, rings from 48px to 42px, and tightened column gaps while preserving the two-column scan path.
+- Result: the widget is 17% narrower and 11% shorter. Both percentages, labels, and exact reset timestamps remain visible; the weekly line omits redundant `重置` copy to preserve a clean right edge.
+
 ## Follow-up polish
 
 - P3: a hover-state capture for tray/drag affordance is not included because the selected visual deliberately hides persistent window controls.
+
+### Pass 10
+
+- Evidence: the user's first live attached-footer screenshot.
+- Change: replaced the 238 x 100 desktop card with a 72/148 x 28 transparent owned window located from the live permissions and model-button accessibility bounds.
+- P2: the quota text appeared optically high even though the bounding rectangles were mathematically centered.
+- Fix: shifted the attached strip down by 2px.
+
+### Pass 11
+
+- Evidence: the user's follow-up screenshot with the complete green outline ring.
+- Change: replaced the weekly 5px filled dot with a 10px green outline ring matching the native context-usage indicator.
+- P2: the outline was always complete and therefore did not encode the displayed 49% quota.
+
+### Pass 12
+
+- Evidence: `screenshots\implementation-v12-inline-footer.png`.
+- Fix: reused the code-native circular progress renderer at 10px with a 1.5px green remaining-quota arc over a low-contrast track.
+- Result: the ring now visibly represents 49%, while permission text, quota text, context indicator, and model text retain one visual baseline. Cached accessibility anchors reduced a five-second CPU sample from 0.922s to 0.141s without changing the 300ms follow cadence.
 
 final result: passed

@@ -8,12 +8,12 @@ try
     Console.WriteLine(JsonSerializer.Serialize(new
     {
         status = "ok",
-        fiveHourUsedPercent = snapshot.FiveHour.UsedPercent,
-        fiveHourRemainingPercent = snapshot.FiveHour.RemainingPercent,
-        fiveHourResetAt = snapshot.FiveHour.ResetsAt,
-        weeklyUsedPercent = snapshot.Weekly.UsedPercent,
-        weeklyRemainingPercent = snapshot.Weekly.RemainingPercent,
-        weeklyResetAt = snapshot.Weekly.ResetsAt
+        fiveHourUsedPercent = snapshot.FiveHour?.UsedPercent,
+        fiveHourRemainingPercent = snapshot.FiveHour?.RemainingPercent,
+        fiveHourResetAt = snapshot.FiveHour?.ResetsAt,
+        weeklyUsedPercent = snapshot.Weekly?.UsedPercent,
+        weeklyRemainingPercent = snapshot.Weekly?.RemainingPercent,
+        weeklyResetAt = snapshot.Weekly?.ResetsAt
     }));
     return 0;
 }

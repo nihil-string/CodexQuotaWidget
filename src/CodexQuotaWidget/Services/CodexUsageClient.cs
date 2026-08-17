@@ -1,8 +1,10 @@
+using System.IO;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
+using System.Security;
+using System.Security.Cryptography;
 using System.Text.Json;
-using System.IO;
 using CodexQuotaWidget.Models;
 
 namespace CodexQuotaWidget.Services;
@@ -25,34 +27,59 @@ public sealed class CodexUsageClient : IDisposable
 {
     private static readonly Uri UsageEndpoint = new("https://chatgpt.com/backend-api/wham/usage");
     private const int MaximumResponseBytes = 1024 * 1024;
+    private const int ResponseBufferBytes = 16 * 1024;
+    private const int MaximumCredentialsBytes = 256 * 1024;
+    private const int CredentialsBufferBytes = 4 * 1024;
+    private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(15);
 
     private readonly HttpClient _httpClient;
     private readonly string _authPath;
 
     public CodexUsageClient(string? codexHome = null)
+        : this(CreateDefaultHandler(), ResolveAuthPath(codexHome))
     {
-        var handler = new HttpClientHandler
+    }
+
+    internal CodexUsageClient(HttpMessageHandler handler, string authPath)
+    {
+        ArgumentNullException.ThrowIfNull(handler);
+        ArgumentException.ThrowIfNullOrWhiteSpace(authPath);
+
+        _httpClient = new HttpClient(handler, disposeHandler: true)
+        {
+            Timeout = Timeout.InfiniteTimeSpan
+        };
+        _httpClient.DefaultRequestHeaders.UserAgent.ParseAdd("CodexQuotaWidget/1.0");
+        _httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+        _authPath = authPath;
+    }
+
+    private static HttpMessageHandler CreateDefaultHandler() =>
+        new HttpClientHandler
         {
             AllowAutoRedirect = false,
             UseCookies = false,
             AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate
         };
-        _httpClient = new HttpClient(handler, disposeHandler: true)
-        {
-            Timeout = TimeSpan.FromSeconds(15)
-        };
-        _httpClient.DefaultRequestHeaders.UserAgent.ParseAdd("CodexQuotaWidget/1.0");
-        _httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
 
-        var root = codexHome
-            ?? Environment.GetEnvironmentVariable("CODEX_HOME")
-            ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex");
-        _authPath = Path.Combine(root, "auth.json");
+    private static string ResolveAuthPath(string? codexHome)
+    {
+        var configuredHome = string.IsNullOrWhiteSpace(codexHome)
+            ? Environment.GetEnvironmentVariable("CODEX_HOME")
+            : codexHome;
+        var root = string.IsNullOrWhiteSpace(configuredHome)
+            ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex")
+            : configuredHome;
+        return Path.Combine(root, "auth.json");
     }
 
     public async Task<RateLimitSnapshot> FetchAsync(CancellationToken cancellationToken = default)
     {
         var credentials = LoadCredentials();
+        using var timeoutCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeoutCancellation.CancelAfter(RequestTimeout);
+        var requestToken = timeoutCancellation.Token;
+
         using var request = new HttpRequestMessage(HttpMethod.Get, UsageEndpoint);
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", credentials.AccessToken);
         if (!string.IsNullOrWhiteSpace(credentials.AccountId))
@@ -66,9 +93,13 @@ public sealed class CodexUsageClient : IDisposable
             response = await _httpClient.SendAsync(
                 request,
                 HttpCompletionOption.ResponseHeadersRead,
-                cancellationToken);
+                requestToken);
         }
-        catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception) when (exception is HttpRequestException or OperationCanceledException)
         {
             throw new UsageFetchException(UsageFailureKind.Network, "无法连接 Codex 额度服务", exception);
         }
@@ -97,10 +128,23 @@ public sealed class CodexUsageClient : IDisposable
                 throw new UsageFetchException(UsageFailureKind.InvalidResponse, "额度响应超过安全大小限制");
             }
 
-            var bytes = await response.Content.ReadAsByteArrayAsync(cancellationToken);
-            if (bytes.Length > MaximumResponseBytes)
+            byte[] bytes;
+            try
             {
-                throw new UsageFetchException(UsageFailureKind.InvalidResponse, "额度响应超过安全大小限制");
+                bytes = await ReadBoundedResponseAsync(response.Content, requestToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (UsageFetchException)
+            {
+                throw;
+            }
+            catch (Exception exception) when (
+                exception is HttpRequestException or IOException or OperationCanceledException)
+            {
+                throw new UsageFetchException(UsageFailureKind.Network, "读取 Codex 额度响应失败", exception);
             }
 
             if (!TryParseUsageJson(bytes, out var snapshot) || snapshot is null)
@@ -119,17 +163,19 @@ public sealed class CodexUsageClient : IDisposable
         {
             using var document = JsonDocument.Parse(json);
             var root = document.RootElement;
-            if (!root.TryGetProperty("rate_limit", out var rateLimit) || rateLimit.ValueKind != JsonValueKind.Object ||
-                !TryParseWindow(rateLimit, "primary_window", out var primary) ||
-                !TryParseWindow(rateLimit, "secondary_window", out var secondary) ||
-                primary is null || secondary is null)
+            if (root.ValueKind != JsonValueKind.Object ||
+                !root.TryGetProperty("rate_limit", out var rateLimit) ||
+                rateLimit.ValueKind != JsonValueKind.Object)
             {
                 return false;
             }
 
+            TryParseWindow(rateLimit, "primary_window", out var primary);
+            TryParseWindow(rateLimit, "secondary_window", out var secondary);
+
             RateLimitWindow? fiveHour = null;
             RateLimitWindow? weekly = null;
-            foreach (var window in new[] { primary, secondary })
+            foreach (var window in new[] { primary, secondary }.OfType<RateLimitWindow>())
             {
                 if (window.WindowMinutes == 300)
                 {
@@ -141,7 +187,7 @@ public sealed class CodexUsageClient : IDisposable
                 }
             }
 
-            if (fiveHour is null || weekly is null)
+            if (fiveHour is null && weekly is null)
             {
                 return false;
             }
@@ -168,32 +214,127 @@ public sealed class CodexUsageClient : IDisposable
                 throw new UsageFetchException(UsageFailureKind.Credentials, "未找到 Codex 登录信息");
             }
 
-            using var document = JsonDocument.Parse(File.ReadAllBytes(_authPath));
-            var root = document.RootElement;
-            if (!root.TryGetProperty("tokens", out var tokens) || tokens.ValueKind != JsonValueKind.Object ||
-                !tokens.TryGetProperty("access_token", out var accessTokenElement))
+            var authBytes = ReadBoundedCredentialsFile();
+            try
             {
-                throw new UsageFetchException(UsageFailureKind.Credentials, "Codex 登录信息格式不受支持");
-            }
+                using var document = JsonDocument.Parse(authBytes);
+                var root = document.RootElement;
+                if (root.ValueKind != JsonValueKind.Object ||
+                    !root.TryGetProperty("tokens", out var tokens) ||
+                    tokens.ValueKind != JsonValueKind.Object ||
+                    !tokens.TryGetProperty("access_token", out var accessTokenElement) ||
+                    accessTokenElement.ValueKind != JsonValueKind.String)
+                {
+                    throw new UsageFetchException(UsageFailureKind.Credentials, "Codex 登录信息格式不受支持");
+                }
 
-            var accessToken = accessTokenElement.GetString();
-            var accountId = tokens.TryGetProperty("account_id", out var accountElement)
-                ? accountElement.GetString()
-                : null;
-            if (string.IsNullOrWhiteSpace(accessToken))
+                var accessToken = accessTokenElement.GetString();
+                string? accountId = null;
+                if (tokens.TryGetProperty("account_id", out var accountElement) &&
+                    accountElement.ValueKind is not JsonValueKind.Null)
+                {
+                    if (accountElement.ValueKind != JsonValueKind.String)
+                    {
+                        throw new UsageFetchException(UsageFailureKind.Credentials, "Codex 登录信息格式不受支持");
+                    }
+
+                    accountId = accountElement.GetString();
+                }
+                if (string.IsNullOrWhiteSpace(accessToken))
+                {
+                    throw new UsageFetchException(UsageFailureKind.Credentials, "Codex access token 为空");
+                }
+
+                return new Credentials(accessToken, accountId);
+            }
+            finally
             {
-                throw new UsageFetchException(UsageFailureKind.Credentials, "Codex access token 为空");
+                CryptographicOperations.ZeroMemory(authBytes);
             }
-
-            return new Credentials(accessToken, accountId);
         }
         catch (UsageFetchException)
         {
             throw;
         }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException)
+        catch (Exception exception) when (
+            exception is IOException or UnauthorizedAccessException or SecurityException or JsonException)
         {
             throw new UsageFetchException(UsageFailureKind.Credentials, "无法读取 Codex 登录信息", exception);
+        }
+    }
+
+    private byte[] ReadBoundedCredentialsFile()
+    {
+        using var stream = new FileStream(
+            _authPath,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.ReadWrite | FileShare.Delete,
+            CredentialsBufferBytes,
+            FileOptions.SequentialScan);
+        if (stream.Length > MaximumCredentialsBytes)
+        {
+            throw new UsageFetchException(UsageFailureKind.Credentials, "Codex 登录信息超过安全大小限制");
+        }
+
+        var initialCapacity = stream.Length > 0 ? (int)stream.Length : CredentialsBufferBytes;
+        using var output = new MemoryStream(initialCapacity);
+        var buffer = new byte[CredentialsBufferBytes];
+        try
+        {
+            while (true)
+            {
+                var remaining = MaximumCredentialsBytes + 1 - (int)output.Length;
+                var read = stream.Read(buffer, 0, Math.Min(buffer.Length, remaining));
+                if (read == 0)
+                {
+                    return output.ToArray();
+                }
+
+                output.Write(buffer, 0, read);
+                if (output.Length > MaximumCredentialsBytes)
+                {
+                    throw new UsageFetchException(UsageFailureKind.Credentials, "Codex 登录信息超过安全大小限制");
+                }
+            }
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(buffer);
+            if (output.TryGetBuffer(out var outputBuffer))
+            {
+                CryptographicOperations.ZeroMemory(outputBuffer.AsSpan(0, (int)output.Length));
+            }
+        }
+    }
+
+    private static async Task<byte[]> ReadBoundedResponseAsync(
+        HttpContent content,
+        CancellationToken cancellationToken)
+    {
+        await using var stream = await content.ReadAsStreamAsync(cancellationToken);
+        var initialCapacity = content.Headers.ContentLength is > 0 and <= MaximumResponseBytes
+            ? (int)content.Headers.ContentLength.Value
+            : ResponseBufferBytes;
+        using var output = new MemoryStream(initialCapacity);
+        var buffer = new byte[ResponseBufferBytes];
+
+        while (true)
+        {
+            var remaining = MaximumResponseBytes + 1 - (int)output.Length;
+            var read = await stream.ReadAsync(
+                buffer.AsMemory(0, Math.Min(buffer.Length, remaining)),
+                cancellationToken);
+            if (read == 0)
+            {
+                return output.ToArray();
+            }
+
+            output.Write(buffer, 0, read);
+            if (output.Length > MaximumResponseBytes)
+            {
+                throw new UsageFetchException(UsageFailureKind.InvalidResponse, "额度响应超过安全大小限制");
+            }
         }
     }
 

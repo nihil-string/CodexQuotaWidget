@@ -3,10 +3,28 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+if ($Runtime -notmatch '^[a-z0-9]+(?:-[a-z0-9]+)*$') {
+    throw "Runtime must be a RID such as win-x64 or win-arm64."
+}
+
 $root = Split-Path -Parent $PSScriptRoot
 $project = Join-Path $root "src\CodexQuotaWidget\CodexQuotaWidget.csproj"
-$publishDir = Join-Path $root "artifacts\publish\$Runtime"
+$publishRoot = [System.IO.Path]::GetFullPath((Join-Path $root "artifacts\publish"))
+$publishDir = [System.IO.Path]::GetFullPath((Join-Path $publishRoot $Runtime))
+if (-not $publishDir.StartsWith($publishRoot + [System.IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "Publish directory escaped the artifacts root."
+}
+
 $releaseDir = Join-Path $root "artifacts\release"
+$zipPath = Join-Path $releaseDir "CodexQuotaWidget-$Runtime.zip"
+
+New-Item -ItemType Directory -Force -Path $releaseDir | Out-Null
+if (Test-Path -LiteralPath $zipPath) {
+    Remove-Item -LiteralPath $zipPath -Force
+}
+if (Test-Path -LiteralPath $publishDir) {
+    Remove-Item -LiteralPath $publishDir -Recurse -Force
+}
 
 dotnet publish $project `
     --configuration Release `
@@ -18,10 +36,8 @@ dotnet publish $project `
     -p:DebugSymbols=false `
     --output $publishDir
 
-New-Item -ItemType Directory -Force -Path $releaseDir | Out-Null
-$zipPath = Join-Path $releaseDir "CodexQuotaWidget-$Runtime.zip"
-if (Test-Path -LiteralPath $zipPath) {
-    Remove-Item -LiteralPath $zipPath -Force
+if ($LASTEXITCODE -ne 0) {
+    throw "dotnet publish failed with exit code $LASTEXITCODE."
 }
 
 $packageFiles = @(

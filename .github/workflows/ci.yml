@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: windows-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore
+        shell: pwsh
+        run: |
+          dotnet restore .\tests\CodexQuotaWidget.Tests\CodexQuotaWidget.Tests.csproj
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          dotnet restore .\tests\CodexQuotaWidget.VisualPreview\CodexQuotaWidget.VisualPreview.csproj
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          dotnet restore .\tests\CodexQuotaWidget.LiveProbe\CodexQuotaWidget.LiveProbe.csproj
+
+      - name: Verify formatting
+        shell: pwsh
+        run: |
+          dotnet format .\src\CodexQuotaWidget\CodexQuotaWidget.csproj --verify-no-changes --no-restore
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          dotnet format .\tests\CodexQuotaWidget.Tests\CodexQuotaWidget.Tests.csproj --verify-no-changes --no-restore
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          dotnet format .\tests\CodexQuotaWidget.VisualPreview\CodexQuotaWidget.VisualPreview.csproj --verify-no-changes --no-restore
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          dotnet format .\tests\CodexQuotaWidget.LiveProbe\CodexQuotaWidget.LiveProbe.csproj --verify-no-changes --no-restore
+
+      - name: Build and test
+        shell: pwsh
+        run: |
+          dotnet build .\tests\CodexQuotaWidget.Tests\CodexQuotaWidget.Tests.csproj -c Release --no-restore
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          dotnet test .\tests\CodexQuotaWidget.Tests\CodexQuotaWidget.Tests.csproj -c Release --no-build --no-restore
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          dotnet build .\tests\CodexQuotaWidget.VisualPreview\CodexQuotaWidget.VisualPreview.csproj -c Release --no-restore
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          dotnet build .\tests\CodexQuotaWidget.LiveProbe\CodexQuotaWidget.LiveProbe.csproj -c Release --no-restore
