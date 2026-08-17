@@ -9,7 +9,7 @@ public sealed record RateLimitWindow(
 }
 
 public sealed record RateLimitSnapshot(
-    RateLimitWindow FiveHour,
-    RateLimitWindow Weekly,
+    RateLimitWindow? FiveHour,
+    RateLimitWindow? Weekly,
     DateTimeOffset ObservedAt,
     string SourceFile);
