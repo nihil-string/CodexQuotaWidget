@@ -11,7 +11,8 @@ public sealed class ComposerProbeControllerTests
         new IntPtr(42),
         new ScreenRectangle(100, 200, 800, 600),
         new ScreenRectangle(420, 750, 148, 28),
-        IsLightBackground: true);
+        IsLightBackground: true,
+        BackgroundRgb: 0xFAFAFA);
 
     [Fact]
     public void ReusesSuccessfulTargetUntilTheNextProbeIsDue()
@@ -30,6 +31,32 @@ public sealed class ComposerProbeControllerTests
         Assert.Equal(Target, initial.Target);
         Assert.Equal(Target, beforeDue.Target);
         Assert.Equal(Target, atDue.Target);
+        Assert.Equal(1, initial.Revision);
+        Assert.Equal(1, beforeDue.Revision);
+        Assert.Equal(2, atDue.Revision);
+        Assert.Equal(2, starts);
+    }
+
+    [Fact]
+    public void RequestedProbeRunsEarlyWithoutDiscardingTheCachedTarget()
+    {
+        var starts = 0;
+        using var controller = CreateController((_, _, _) =>
+        {
+            starts++;
+            return Task.FromResult<CodexComposerTarget?>(Target);
+        });
+
+        var initial = controller.Poll(148, 28, StartTime);
+        controller.RequestProbe(StartTime.AddSeconds(1));
+        var beforeRequested = controller.Poll(148, 28, StartTime.AddMilliseconds(999));
+        var requested = controller.Poll(148, 28, StartTime.AddSeconds(1));
+
+        Assert.Equal(Target, initial.Target);
+        Assert.Equal(Target, beforeRequested.Target);
+        Assert.Equal(Target, requested.Target);
+        Assert.Equal(1, beforeRequested.Revision);
+        Assert.Equal(2, requested.Revision);
         Assert.Equal(2, starts);
     }
 

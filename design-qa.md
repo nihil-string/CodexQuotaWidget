@@ -109,4 +109,10 @@ No actionable P0, P1, or P2 differences remain in the attached layout.
 - Fix: removed cross-process ownership, moved UI Automation to a background single-flight probe limited to once per five seconds, batch-cached automation properties, hid after a one-second timeout, projected window-only movement with native bounds, and skipped unchanged `SetWindowPos` calls.
 - Result: the quota strip remains visually independent from the Codex DOM and process. A stalled accessibility provider can hide one overlay and occupy at most one background probe; it can no longer block the widget dispatcher while Codex waits on an owned window.
 
+### Pass 14
+
+- Evidence: the user's screenshot showed soft 11px glyph edges, a visually uneven label/percentage baseline, and perceptible delay while moving the Codex window. Runtime inspection also reported Codex as per-monitor DPI aware and the deployed widget as only system-DPI aware.
+- Fix: declared `PerMonitorV2`, replaced the transparent layered window with an opaque surface colored from the existing composer sample point so WPF can use ClearType at 100% opacity, selected display-optimized fixed text hinting, placed each label and percentage in one `TextBlock` line, and added a filtered top-level `EVENT_OBJECT_LOCATIONCHANGE` WinEvent hook with the existing 300ms projection timer retained as a fallback.
+- Validation: automated tests and rendered previews cover the manifest, event filter, baseline structure, and static appearance. After the 1.0.5 deployment, the user confirmed that ordinary Codex window dragging no longer has perceptible delay; cross-monitor sharpness still requires separate live validation.
+
 final result: passed

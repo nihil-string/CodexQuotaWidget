@@ -5,9 +5,12 @@
         Title="Codex Quota Widget"
         Width="148" MinWidth="64" Height="28"
         WindowStyle="None" ResizeMode="NoResize"
-        AllowsTransparency="True" Background="Transparent"
+        AllowsTransparency="False" Background="#FAFAFA"
         ShowInTaskbar="False" ShowActivated="False" Focusable="False" Topmost="False"
-        SnapsToDevicePixels="True" UseLayoutRounding="True">
+        SnapsToDevicePixels="True" UseLayoutRounding="True"
+        TextOptions.TextFormattingMode="Display"
+        TextOptions.TextHintingMode="Fixed"
+        TextOptions.TextRenderingMode="ClearType">
   <Window.Resources>
     <SolidColorBrush x:Key="PrimaryText" Color="#5F6368" />
     <SolidColorBrush x:Key="SecondaryText" Color="#7A7F85" />
@@ -108,19 +111,19 @@
                   HorizontalAlignment="Center"
                   VerticalAlignment="Center">
         <Ellipse Width="5" Height="5" Fill="#3B82F6" Margin="0,0,5,0" />
-        <TextBlock x:Name="FiveHourLabel" Text="5h"
-                   Foreground="{StaticResource SecondaryText}"
-                   FontFamily="Segoe UI Variable Text, Microsoft YaHei UI"
+        <TextBlock FontFamily="Segoe UI, Microsoft YaHei UI"
                    FontSize="11"
-                   VerticalAlignment="Center" />
-        <TextBlock x:Name="FiveHourPercent"
-                   Text="—"
-                   Foreground="{StaticResource PrimaryText}"
-                   FontFamily="Segoe UI Variable Text, Microsoft YaHei UI"
-                   FontWeight="SemiBold"
-                   FontSize="11"
-                   Margin="4,0,0,0"
-                   VerticalAlignment="Center" />
+                   VerticalAlignment="Center">
+          <TextBlock.Inlines>
+            <Run x:Name="FiveHourLabel"
+                 Text="5h "
+                 Foreground="{StaticResource SecondaryText}" />
+            <Run x:Name="FiveHourPercent"
+                 Text="—"
+                 Foreground="{StaticResource PrimaryText}"
+                 FontWeight="SemiBold" />
+          </TextBlock.Inlines>
+        </TextBlock>
         <controls:CircularProgress x:Name="FiveHourRing" Visibility="Collapsed" />
         <TextBlock x:Name="FiveHourReset" Visibility="Collapsed" />
       </StackPanel>
@@ -143,19 +146,20 @@
                                    ProgressBrush="#10B981"
                                    StrokeThickness="1.5"
                                    Margin="0,0,5,0" />
-        <TextBlock x:Name="WeeklyLabel" Text="周"
-                   Foreground="{StaticResource SecondaryText}"
-                   FontFamily="Microsoft YaHei UI"
+        <TextBlock FontFamily="Segoe UI, Microsoft YaHei UI"
                    FontSize="11"
-                   VerticalAlignment="Center" />
-        <TextBlock x:Name="WeeklyPercent"
-                   Text="—"
-                   Foreground="{StaticResource PrimaryText}"
-                   FontFamily="Segoe UI Variable Text, Microsoft YaHei UI"
-                   FontWeight="SemiBold"
-                   FontSize="11"
-                   Margin="4,0,0,0"
-                   VerticalAlignment="Center" />
+                   VerticalAlignment="Center">
+          <TextBlock.Inlines>
+            <Run x:Name="WeeklyLabel"
+                 Text="周 "
+                 FontFamily="Microsoft YaHei UI"
+                 Foreground="{StaticResource SecondaryText}" />
+            <Run x:Name="WeeklyPercent"
+                 Text="—"
+                 Foreground="{StaticResource PrimaryText}"
+                 FontWeight="SemiBold" />
+          </TextBlock.Inlines>
+        </TextBlock>
         <TextBlock x:Name="WeeklyReset" Visibility="Collapsed" />
       </StackPanel>
 

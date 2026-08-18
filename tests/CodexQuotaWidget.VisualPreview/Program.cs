@@ -106,18 +106,18 @@ internal static class Program
 
     private static Window CreateBackdropWindow()
     {
-        var canvas = new Canvas { Background = new SolidColorBrush(System.Windows.Media.Color.FromRgb(31, 39, 48)) };
+        var canvas = new Canvas { Background = new SolidColorBrush(System.Windows.Media.Color.FromRgb(250, 250, 250)) };
         canvas.Children.Add(new WpfRectangle
         {
             Width = 360,
             Height = 420,
-            Fill = new SolidColorBrush(System.Windows.Media.Color.FromRgb(47, 60, 72))
+            Fill = new SolidColorBrush(System.Windows.Media.Color.FromRgb(247, 247, 247))
         });
         var block = new WpfRectangle
         {
             Width = 260,
             Height = 210,
-            Fill = new SolidColorBrush(System.Windows.Media.Color.FromRgb(72, 58, 63))
+            Fill = new SolidColorBrush(System.Windows.Media.Color.FromRgb(244, 244, 244))
         };
         Canvas.SetLeft(block, 270);
         Canvas.SetTop(block, 95);

@@ -10,27 +10,31 @@ internal readonly record struct CodexComposerTarget(
     IntPtr WindowHandle,
     ScreenRectangle WindowBounds,
     ScreenRectangle Placement,
-    bool IsLightBackground);
+    bool IsLightBackground,
+    int BackgroundRgb);
 
 internal sealed record ComposerProbePayload(
     long WindowHandle,
     ScreenRectangle WindowBounds,
     ScreenRectangle Placement,
-    bool IsLightBackground)
+    bool IsLightBackground,
+    int BackgroundRgb)
 {
     public static ComposerProbePayload FromTarget(CodexComposerTarget target) =>
         new(
             target.WindowHandle.ToInt64(),
             target.WindowBounds,
             target.Placement,
-            target.IsLightBackground);
+            target.IsLightBackground,
+            target.BackgroundRgb);
 
     public CodexComposerTarget ToTarget() =>
         new(
             new IntPtr(WindowHandle),
             WindowBounds,
             Placement,
-            IsLightBackground);
+            IsLightBackground,
+            BackgroundRgb);
 }
 
 internal sealed class CodexComposerLocator
@@ -111,11 +115,13 @@ internal sealed class CodexComposerLocator
                 return false;
             }
 
+            var background = ReadComposerBackground(permissions.Bounds, model.Bounds);
             target = new CodexComposerTarget(
                 windowHandle,
                 windowRect,
                 placement,
-                IsLightBackground(permissions.Bounds, model.Bounds));
+                background.IsLight,
+                background.Rgb);
             return true;
         }
         catch (Exception exception) when (
@@ -324,12 +330,15 @@ internal sealed class CodexComposerLocator
         className.Split(' ', StringSplitOptions.RemoveEmptyEntries)
             .Contains(expectedClass, StringComparer.Ordinal);
 
-    private static bool IsLightBackground(ScreenRectangle permissions, ScreenRectangle model)
+    private static ComposerBackground ReadComposerBackground(
+        ScreenRectangle permissions,
+        ScreenRectangle model)
     {
+        const int fallbackRgb = 0xFAFAFA;
         var screenDc = GetDC(IntPtr.Zero);
         if (screenDc == IntPtr.Zero)
         {
-            return true;
+            return new ComposerBackground(fallbackRgb, IsLight: true);
         }
 
         try
@@ -339,14 +348,16 @@ internal sealed class CodexComposerLocator
             var color = GetPixel(screenDc, sampleX, sampleY);
             if (color == uint.MaxValue)
             {
-                return true;
+                return new ComposerBackground(fallbackRgb, IsLight: true);
             }
 
-            var red = color & 0xff;
-            var green = color >> 8 & 0xff;
-            var blue = color >> 16 & 0xff;
+            var red = (int)(color & 0xff);
+            var green = (int)(color >> 8 & 0xff);
+            var blue = (int)(color >> 16 & 0xff);
             var luminance = (0.2126 * red + 0.7152 * green + 0.0722 * blue) / 255;
-            return luminance >= 0.56;
+            return new ComposerBackground(
+                red << 16 | green << 8 | blue,
+                luminance >= 0.56);
         }
         finally
         {
@@ -366,6 +377,8 @@ internal sealed class CodexComposerLocator
         string Name,
         string ClassName,
         ScreenRectangle Bounds);
+
+    private readonly record struct ComposerBackground(int Rgb, bool IsLight);
 
     [StructLayout(LayoutKind.Sequential)]
     private struct NativeRectangle

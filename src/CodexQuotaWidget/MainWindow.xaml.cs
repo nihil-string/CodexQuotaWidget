@@ -7,6 +7,7 @@ using System.Runtime.InteropServices;
 using System.Security;
 using System.Text.Json;
 using System.Windows;
+using System.Windows.Documents;
 using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Threading;
@@ -39,6 +40,8 @@ public partial class MainWindow : Window
     private readonly WidgetSettingsStore _settingsStore = new();
     private readonly CodexProcessMonitor _codexProcessMonitor = new();
     private readonly ComposerProbeController _composerProbeController;
+    private readonly ComposerThemeStabilizer _composerThemeStabilizer = new();
+    private readonly WindowLocationMonitor? _windowLocationMonitor;
     private readonly StartupRegistration _startupRegistration = new();
     private readonly DispatcherTimer _refreshTimer;
     private readonly DispatcherTimer _countdownTimer;
@@ -62,8 +65,11 @@ public partial class MainWindow : Window
     private bool _lastCodexRunning;
     private bool _userHidden;
     private bool? _lastLightBackground;
+    private int? _lastBackgroundRgb;
+    private long _lastComposerThemeRevision;
     private (int X, int Y, int Width, int Height)? _lastNativePlacement;
     private IntPtr _lastPlacedCodexHandle;
+    private bool _placementUpdateQueued;
     private bool _isExiting;
 
     public MainWindow(bool backgroundStart = false, bool enableSystemIntegration = true)
@@ -91,6 +97,11 @@ public partial class MainWindow : Window
             ComposerCachedTargetGrace);
         _enableSystemIntegration = enableSystemIntegration;
         _previewSnapshot = previewSnapshot;
+        if (previewSnapshot is null)
+        {
+            _windowLocationMonitor = new WindowLocationMonitor();
+            _windowLocationMonitor.LocationChanged += OnNativeWindowLocationChanged;
+        }
         var settingsLoad = previewSnapshot is null
             ? _settingsStore.LoadWithStatus()
             : new WidgetSettingsLoadResult(new WidgetSettings(), WidgetSettingsLoadStatus.Missing);
@@ -131,6 +142,7 @@ public partial class MainWindow : Window
         {
             ApplyToolWindowStyle();
             ApplyClickThrough();
+            _windowLocationMonitor?.Start();
         };
         Closing += MainWindow_Closing;
     }
@@ -545,7 +557,7 @@ public partial class MainWindow : Window
     }
 
     private static void UpdateQuota(
-        System.Windows.Controls.TextBlock label,
+        Run label,
         CircularProgress ring,
         RateLimitWindow? window)
     {
@@ -676,7 +688,20 @@ public partial class MainWindow : Window
             return;
         }
 
-        ApplyComposerTheme(target.IsLightBackground);
+        if (observation.Revision != _lastComposerThemeRevision)
+        {
+            var themeDecision = _composerThemeStabilizer.Observe(
+                target.IsLightBackground,
+                target.BackgroundRgb);
+            _lastComposerThemeRevision = observation.Revision;
+            if (themeDecision.RequiresConfirmation)
+            {
+                _composerProbeController.RequestProbe(now + ComposerProbeFailureInterval);
+            }
+        }
+
+        var stableTheme = _composerThemeStabilizer.Current;
+        ApplyComposerTheme(stableTheme.IsLightBackground, stableTheme.BackgroundRgb);
         if (!wasVisible)
         {
             Opacity = 0;
@@ -716,6 +741,36 @@ public partial class MainWindow : Window
             _lastPlacedCodexHandle = target.WindowHandle;
         }
         Opacity = Math.Clamp(_settings.Opacity, 0.6, 1.0);
+    }
+
+    private void OnNativeWindowLocationChanged(IntPtr windowHandle)
+    {
+        if (_isExiting ||
+            windowHandle == IntPtr.Zero ||
+            windowHandle != _lastPlacedCodexHandle ||
+            _placementUpdateQueued)
+        {
+            return;
+        }
+
+        _placementUpdateQueued = true;
+        try
+        {
+            _ = Dispatcher.BeginInvoke(
+                DispatcherPriority.Render,
+                new Action(() =>
+                {
+                    _placementUpdateQueued = false;
+                    if (!_isExiting && windowHandle == _lastPlacedCodexHandle)
+                    {
+                        UpdateComposerPlacement();
+                    }
+                }));
+        }
+        catch (InvalidOperationException)
+        {
+            _placementUpdateQueued = false;
+        }
     }
 
     private static async Task<CodexComposerTarget?> StartComposerProbeAsync(
@@ -788,20 +843,27 @@ public partial class MainWindow : Window
         }
     }
 
-    private void ApplyComposerTheme(bool isLightBackground)
+    private void ApplyComposerTheme(bool isLightBackground, int backgroundRgb)
     {
-        if (_lastLightBackground == isLightBackground)
+        if (_lastLightBackground == isLightBackground &&
+            _lastBackgroundRgb == backgroundRgb)
         {
             return;
         }
 
         _lastLightBackground = isLightBackground;
+        _lastBackgroundRgb = backgroundRgb;
+        var background = new SolidColorBrush(System.Windows.Media.Color.FromRgb(
+            (byte)(backgroundRgb >> 16 & 0xff),
+            (byte)(backgroundRgb >> 8 & 0xff),
+            (byte)(backgroundRgb & 0xff)));
         var primary = new SolidColorBrush(isLightBackground
             ? System.Windows.Media.Color.FromRgb(78, 82, 87)
             : System.Windows.Media.Color.FromRgb(214, 217, 221));
         var secondary = new SolidColorBrush(isLightBackground
             ? System.Windows.Media.Color.FromRgb(112, 117, 123)
             : System.Windows.Media.Color.FromRgb(163, 168, 174));
+        Background = background;
         FiveHourPercent.Foreground = primary;
         WeeklyPercent.Foreground = primary;
         FiveHourLabel.Foreground = secondary;
@@ -902,6 +964,7 @@ public partial class MainWindow : Window
         StopQuotaUpdates();
         _lifecycleTimer.Stop();
         _placementTimer.Stop();
+        _windowLocationMonitor?.Dispose();
         _composerProbeController.Dispose();
         _watcher?.Dispose();
         _refreshCoordinator.Dispose();
