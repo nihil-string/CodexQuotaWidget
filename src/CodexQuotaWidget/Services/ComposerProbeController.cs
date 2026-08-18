@@ -2,7 +2,8 @@ namespace CodexQuotaWidget.Services;
 
 internal readonly record struct ComposerProbeObservation(
     CodexComposerTarget? Target,
-    bool TimedOut);
+    bool TimedOut,
+    long Revision);
 
 internal sealed class ComposerProbeController : IDisposable
 {
@@ -17,6 +18,7 @@ internal sealed class ComposerProbeController : IDisposable
     private DateTimeOffset _nextProbeAt = DateTimeOffset.MinValue;
     private CodexComposerTarget? _target;
     private DateTimeOffset _targetObservedAt;
+    private long _targetRevision;
     private bool _activeProbeTimedOut;
     private bool _disposed;
 
@@ -63,7 +65,7 @@ internal sealed class ComposerProbeController : IDisposable
                 _activeProbeTimedOut = true;
                 CancelActiveProbe();
                 DiscardExpiredTarget(now);
-                return new ComposerProbeObservation(_target, TimedOut: true);
+                return new ComposerProbeObservation(_target, TimedOut: true, _targetRevision);
             }
         }
 
@@ -78,7 +80,18 @@ internal sealed class ComposerProbeController : IDisposable
 
         return new ComposerProbeObservation(
             _target,
-            TimedOut: _activeProbeTimedOut && _activeProbe is not null);
+            TimedOut: _activeProbeTimedOut && _activeProbe is not null,
+            _targetRevision);
+    }
+
+    public void RequestProbe(DateTimeOffset requestedAt)
+    {
+        if (_disposed || requestedAt >= _nextProbeAt)
+        {
+            return;
+        }
+
+        _nextProbeAt = requestedAt;
     }
 
     public void Invalidate(DateTimeOffset now)
@@ -169,6 +182,7 @@ internal sealed class ComposerProbeController : IDisposable
         {
             _target = target;
             _targetObservedAt = now;
+            _targetRevision++;
             _nextProbeAt = now + _successInterval;
         }
         else

@@ -40,6 +40,7 @@ public partial class MainWindow : Window
     private readonly WidgetSettingsStore _settingsStore = new();
     private readonly CodexProcessMonitor _codexProcessMonitor = new();
     private readonly ComposerProbeController _composerProbeController;
+    private readonly ComposerThemeStabilizer _composerThemeStabilizer = new();
     private readonly WindowLocationMonitor? _windowLocationMonitor;
     private readonly StartupRegistration _startupRegistration = new();
     private readonly DispatcherTimer _refreshTimer;
@@ -65,6 +66,7 @@ public partial class MainWindow : Window
     private bool _userHidden;
     private bool? _lastLightBackground;
     private int? _lastBackgroundRgb;
+    private long _lastComposerThemeRevision;
     private (int X, int Y, int Width, int Height)? _lastNativePlacement;
     private IntPtr _lastPlacedCodexHandle;
     private bool _placementUpdateQueued;
@@ -686,7 +688,20 @@ public partial class MainWindow : Window
             return;
         }
 
-        ApplyComposerTheme(target.IsLightBackground, target.BackgroundRgb);
+        if (observation.Revision != _lastComposerThemeRevision)
+        {
+            var themeDecision = _composerThemeStabilizer.Observe(
+                target.IsLightBackground,
+                target.BackgroundRgb);
+            _lastComposerThemeRevision = observation.Revision;
+            if (themeDecision.RequiresConfirmation)
+            {
+                _composerProbeController.RequestProbe(now + ComposerProbeFailureInterval);
+            }
+        }
+
+        var stableTheme = _composerThemeStabilizer.Current;
+        ApplyComposerTheme(stableTheme.IsLightBackground, stableTheme.BackgroundRgb);
         if (!wasVisible)
         {
             Opacity = 0;
